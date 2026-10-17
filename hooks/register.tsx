@@ -24,6 +24,8 @@ type Host = {
 
 type Helper = {
   url: string
+  // What the window it opens on start shows: a white board, or the clipboard.
+  board: boolean
   stream: HookStream<ProcessSpawnChunk, ProcessSpawnResult>
   ready: Promise<string>
 }
@@ -48,7 +50,7 @@ const MARK_WORDS: Record<string, [string, string]> = {
 let helper: Helper | undefined
 // Made in this load's session.start, so the helper and its reports live on
 // that hook's `$`, the home the API documents for work as long as the session.
-let launch: ((options: Options) => Promise<string | undefined>) | undefined
+let launch: ((options: Options, board?: boolean) => Promise<string | undefined>) | undefined
 let drop: ((ids?: readonly string[]) => Promise<number>) | undefined
 
 // ---------------------------------------------------------------- options
@@ -120,9 +122,9 @@ function randomToken(): string {
   return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('')
 }
 
-function helperArgv(host: Host, root: string, token: string, store: string, options: Options): string[] {
+function helperArgv(host: Host, root: string, token: string, store: string, options: Options, board: boolean): string[] {
   if (host.windows) {
-    return [
+    const argv = [
       joinPath(host, host.systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
       '-NoLogo',
       '-NoProfile',
@@ -143,8 +145,9 @@ function helperArgv(host: Host, root: string, token: string, store: string, opti
       options.browser,
       '-Open',
     ]
+    return board ? [...argv, '-Board'] : argv
   }
-  return [
+  const argv = [
     'node',
     joinPath(host, root, 'server', 'server.mjs'),
     '--token',
@@ -159,6 +162,7 @@ function helperArgv(host: Host, root: string, token: string, store: string, opti
     options.browser,
     '--open',
   ]
+  return board ? [...argv, '--board'] : argv
 }
 
 async function setStatus($: Engine, phase: QsketchStatus['phase'], message = ''): Promise<void> {
@@ -210,9 +214,12 @@ async function onHelperEvent($: Engine, host: Host, current: Helper, event: Reco
       return
     case 'opened':
       await setStatus($, 'idle')
-      $.ui.toast(`The screenshot editor is open. Paste a screenshot there with ${host.windows ? 'Ctrl+V' : '⌘V'}.`, {
-        timeoutMs: 6000,
-      })
+      $.ui.toast(
+        event.board === true
+          ? 'The white board is open. Draw on it and attach it to your next message.'
+          : `The screenshot editor is open. Paste a screenshot there with ${host.windows ? 'Ctrl+V' : '⌘V'}.`,
+        { timeoutMs: 6000 },
+      )
       return
     case 'attached': {
       const attachment = toAttachment(host, event)
@@ -268,15 +275,15 @@ async function pump($: Engine, host: Host, current: Helper, settle: { resolve: (
   }
 }
 
-function startHelper($: Engine, host: Host, options: Options): Helper {
+function startHelper($: Engine, host: Host, options: Options, board: boolean): Helper {
   const token = randomToken()
-  const argv = helperArgv(host, $.plugin.root, token, storeDir(host), options)
+  const argv = helperArgv(host, $.plugin.root, token, storeDir(host), options, board)
   let settle!: { resolve: (url: string) => void; reject: (error: Error) => void }
   const ready = new Promise<string>((resolve, reject) => {
     settle = { resolve, reject }
   })
   ready.catch(() => undefined)
-  const current: Helper = { url: '', stream: $.process.spawn({ argv }), ready }
+  const current: Helper = { url: '', board, stream: $.process.spawn({ argv }), ready }
   helper = current
   void pump($, host, current, settle)
   const timer = $.clock.after(READY_TIMEOUT_MS, () => {
@@ -288,25 +295,27 @@ function startHelper($: Engine, host: Host, options: Options): Helper {
   return current
 }
 
-// Opens an editor window, starting the helper when none runs. Resolves once
-// the window is on its way: undefined, or why it could not open.
-async function openEditor($: Engine, options: Options): Promise<string | undefined> {
+// Opens an editor window (a blank white board when `board`), starting the
+// helper when none runs. Resolves once the window is on its way: undefined,
+// or why it could not open.
+async function openEditor($: Engine, options: Options, board = false): Promise<string | undefined> {
   try {
     const host = await hostOf($)
     const current = helper
+    if (current && !current.url) {
+      // Starting already; it opens a window itself once it listens.
+      await current.ready
+      if (current.board === board) return undefined
+    }
     if (current?.url) {
-      const response = await $.http.fetch(`${current.url}api/open`, { method: 'POST' }).catch(() => undefined)
+      const response = await $.http.fetch(`${current.url}api/open${board ? '?board' : ''}`, { method: 'POST' }).catch(() => undefined)
       if (response?.ok) return undefined
       // The helper is gone or stuck: start a fresh one below.
       void current.stream.return(undefined as never)
       if (helper === current) helper = undefined
-    } else if (current) {
-      // Starting already; it opens the window itself once it listens.
-      await current.ready
-      return undefined
     }
     await setStatus($, 'starting', 'Opening the editor...')
-    await startHelper($, host, options).ready
+    await startHelper($, host, options, board).ready
     // Listening: the helper opens the window on its own from here.
     await setStatus($, 'idle')
     return undefined
@@ -441,10 +450,10 @@ export const register: Register = (on, rawOptions) => {
     await $.command.register({
       name: 'qsk',
       description: 'Mark up a screenshot and attach it to your next message',
-      argumentHint: '[clear | folder]',
+      argumentHint: '[board | clear | folder]',
       immediate: true,
     })
-    launch = options => openEditor($, options)
+    launch = (options, board) => openEditor($, options, board)
     drop = ids => dropPending($, ids)
     // A reload starts without a helper; whatever the band said is stale.
     await setStatus($, 'idle')
@@ -465,11 +474,12 @@ export const register: Register = (on, rawOptions) => {
       const store = await openFolder($)
       return { text: `Attachments are kept in ${store}` }
     }
-    const problem = launch ? await launch(options) : await openEditor($, options)
+    const board = arg === 'board'
+    const problem = launch ? await launch(options, board) : await openEditor($, options, board)
     return {
       text: problem
         ? `Could not open the screenshot editor: ${problem}`
-        : 'Opened the screenshot editor. Attach a picture there and it goes with your next message.',
+        : `Opened the ${board ? 'white board' : 'screenshot editor'}. Attach a picture there and it goes with your next message.`,
     }
   })
 
@@ -524,8 +534,8 @@ export const register: Register = (on, rawOptions) => {
 
     const { Box, Text, Button } = $.ui.resolve(e)
     const open = () => void (launch ? launch(options) : openEditor($, options))
+    const openBoard = () => void (launch ? launch(options, true) : openEditor($, options, true))
     const clear = () => void (drop ? drop(list.map(a => a.id)) : dropPending($, list.map(a => a.id)))
-    const dismiss = () => void update($, lastSent, () => null)
 
     let line = 'Mark up a screenshot and attach it to your next message.'
     let color: string | undefined
@@ -543,14 +553,15 @@ export const register: Register = (on, rawOptions) => {
     const head = (
       <Box flexDirection="row" gap={1} alignItems="center">
         <Button key="open" label={list.length ? 'Add another' : 'Annotate screenshot'} onPress={open} />
+        <Button key="board" label="White board" onPress={openBoard} />
         {list.length > 0 && <Button key="clear" label="Clear" dimColor onPress={clear} />}
-        {sentItems.length > 0 && <Button key="dismiss" label="Dismiss" dimColor onPress={dismiss} />}
         <Text dimColor={color === undefined} color={color} wrap="truncate-end">
           {line}
         </Text>
       </Box>
     )
-    const shown = list.length ? list : sentItems
+    // Thumbnails only for pictures still waiting; a sent one gets the line alone.
+    const shown = list
     if (!shown.length) return head
 
     const remove = (id: string) => () => void (drop ? drop([id]) : dropPending($, [id]))

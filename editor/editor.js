@@ -1,7 +1,8 @@
 // qsketch editor: mark up a screenshot and hand it to Claude.
 //
 // The qsketch helper serves this page at http://127.0.0.1:<port>/<token>/.
-// Its API sits beside the page: api/attach, api/open, api/reveal, api/ping.
+// Its API sits beside the page: api/attach, api/open, api/reveal, api/ping, api/clipboard.
+// Opened as ?board, it starts on a blank white sheet instead of the clipboard.
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 const MOD = isMac ? '⌘' : 'Ctrl+'
@@ -21,11 +22,13 @@ const SIZES = ['s', 'm', 'l']
 const SIZE_FACTORS = { s: 1, m: 1.7, l: 2.8 }
 const SIZE_NAMES = { s: 'Thin', m: 'Medium', l: 'Thick' }
 const MAX_ATTACH_SIDE = 2560
+const BOARD_WIDTH = 1600
+const BOARD_HEIGHT = 1000
 const HISTORY_LIMIT = 100
 
 const TOOLS = {
   select: { key: 'v', name: 'Select', cursor: 'default', hint: 'Click a mark to select it, drag to move it, Delete removes it. Arrow keys nudge.' },
-  pen: { key: 'p', name: 'Pen', cursor: 'crosshair', hint: 'Drag to draw. Hold Shift for a straight line.' },
+  pen: { key: 'b', name: 'Pen', cursor: 'crosshair', hint: 'Drag to draw. Hold Shift for a straight line.' },
   highlighter: { key: 'h', name: 'Highlighter', cursor: 'crosshair', hint: 'Drag to highlight. Hold Shift for a straight line.' },
   arrow: { key: 'a', name: 'Arrow', cursor: 'crosshair', hint: 'Drag from the tail to the tip. Shift snaps the angle.' },
   rect: { key: 'r', name: 'Rectangle', cursor: 'crosshair', hint: 'Drag to draw a box. Shift makes a square.' },
@@ -52,8 +55,10 @@ const notesHint = byIdEl('notes-hint')
 const commentField = byIdEl('comment')
 const closeAfterBox = byIdEl('close-after')
 const legendBox = byIdEl('legend')
+const autoCopyBox = byIdEl('auto-copy')
 const fileInput = byIdEl('file-input')
 const toastEl = byIdEl('toast')
+const confirmDialog = byIdEl('confirm')
 const undoBtn = byIdEl('undo')
 const redoBtn = byIdEl('redo')
 const clearBtn = byIdEl('clear')
@@ -756,6 +761,7 @@ function afterChange() {
   renderNotes()
   updateUI()
   render()
+  scheduleAutoCopy()
 }
 
 function removeShape(id) {
@@ -1033,6 +1039,7 @@ function createNoteRow(marker) {
     state.notes.set(id, area.value)
     state.used = false
     autoGrow(area)
+    scheduleAutoCopy()
   })
   area.addEventListener('keydown', e => {
     if ((e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) || e.key === 'Escape') {
@@ -1297,6 +1304,25 @@ async function copyImage() {
   }
 }
 
+// Keeps the clipboard holding the latest marked-up image, so it can be pasted
+// into Claude without clicking Copy. Quiet: a failed write (say, the window
+// lost focus) is tried again on the next edit.
+let autoCopyTimer = 0
+
+function scheduleAutoCopy() {
+  clearTimeout(autoCopyTimer)
+  if (!autoCopyBox.checked || !state.image) return
+  autoCopyTimer = setTimeout(async () => {
+    if (!state.image || state.draft) return
+    try {
+      const blob = toBlob(exportCanvas({ legend: legendBox.checked && hasNotes() }))
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+    } catch {
+      // Tried again on the next change.
+    }
+  }, 600)
+}
+
 async function saveImage() {
   if (!state.image) return
   commitTextEdit()
@@ -1373,7 +1399,7 @@ async function loadImageBlob(blob) {
     return
   }
   const hasWork = state.image && (state.shapes.length || hasNotes())
-  if (hasWork && !state.used && !window.confirm('Replace the current screenshot? Your marks on it will be lost.')) {
+  if (hasWork && !state.used && !(await askReplace())) {
     bitmap.close()
     return
   }
@@ -1382,12 +1408,38 @@ async function loadImageBlob(blob) {
   base.height = bitmap.height
   base.getContext('2d').drawImage(bitmap, 0, 0)
   bitmap.close()
+  openCanvas(base)
+}
+
+// window.confirm() puts the page address (127.0.0.1:port) in its title, so the
+// question is asked in a dialog of our own. Esc or Cancel answers no.
+function askReplace() {
+  if (confirmDialog.open) return Promise.resolve(false)
+  confirmDialog.returnValue = ''
+  confirmDialog.showModal()
+  return new Promise(resolve => {
+    confirmDialog.addEventListener('close', () => resolve(confirmDialog.returnValue === 'ok'), { once: true })
+  })
+}
+
+function openCanvas(base) {
   resetDocument()
   state.image = base
   state.width = base.width
   state.height = base.height
   fitView()
   afterChange()
+}
+
+// The White board button opens the page as ?board: a blank white sheet to draw on.
+function openWhiteBoard() {
+  const base = document.createElement('canvas')
+  base.width = BOARD_WIDTH
+  base.height = BOARD_HEIGHT
+  const ctx = base.getContext('2d')
+  ctx.fillStyle = '#ffffff'
+  ctx.fillRect(0, 0, base.width, base.height)
+  openCanvas(base)
 }
 
 async function pasteFromClipboard() {
@@ -1403,6 +1455,17 @@ async function pasteFromClipboard() {
     toast(`The clipboard holds no image. ${snipHint()}`)
   } catch {
     toast(`Press ${MOD}V to paste the screenshot instead.`)
+  }
+}
+
+// A screenshot already on the clipboard opens as soon as the window does.
+async function loadClipboardOnStart() {
+  try {
+    const response = await fetch('api/clipboard')
+    if (response.status !== 200 || state.image) return
+    await loadImageBlob(await response.blob())
+  } catch {
+    // Nothing to open: the drop zone asks for a paste as usual.
   }
 }
 
@@ -1691,7 +1754,8 @@ window.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey
   const key = shortcutKey(e)
 
-  if (mod && key === 'Enter') {
+  if (confirmDialog.open) return
+  if (mod && key === ' ') {
     e.preventDefault()
     attach()
     return
@@ -1901,7 +1965,7 @@ function init() {
   byIdEl('open').title = `Open an image (${MOD}O)`
   copyBtn.title = `Copy the marked-up image, then paste it into Claude with ${MOD}V (${MOD}C)`
   saveBtn.title = `Save a copy on this computer (${MOD}S)`
-  attachBtn.title = `Attach to your next message in Claude (${MOD}Enter)`
+  attachBtn.title = `Attach to your next message in Claude (${isMac ? '⌃' : 'Ctrl+'}Space)`
   byIdEl('zoom-in').title = `Zoom in (${MOD}+)`
   byIdEl('zoom-out').title = `Zoom out (${MOD}-)`
   byIdEl('zoom-fit').title = `Fit to window (${MOD}0)`
@@ -1937,10 +2001,19 @@ function init() {
   closeAfterBox.checked = settings.get('closeAfter', true)
   legendBox.checked = settings.get('legend', true)
   closeAfterBox.addEventListener('change', () => settings.set('closeAfter', closeAfterBox.checked))
-  legendBox.addEventListener('change', () => settings.set('legend', legendBox.checked))
+  autoCopyBox.checked = settings.get('autoCopy', false)
+  legendBox.addEventListener('change', () => {
+    settings.set('legend', legendBox.checked)
+    scheduleAutoCopy()
+  })
+  autoCopyBox.addEventListener('change', () => {
+    settings.set('autoCopy', autoCopyBox.checked)
+    scheduleAutoCopy()
+  })
   commentField.addEventListener('input', () => {
     state.used = false
     autoGrow(commentField)
+    scheduleAutoCopy()
   })
 
   new ResizeObserver(() => {
@@ -1957,6 +2030,8 @@ function init() {
   renderNotes()
   updateUI()
   render()
+  if (new URLSearchParams(location.search).has('board')) openWhiteBoard()
+  else loadClipboardOnStart()
 
   // Keeps the helper alive while this window is open.
   const ping = () => fetch('api/ping').catch(() => {})

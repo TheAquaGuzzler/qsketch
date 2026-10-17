@@ -387,6 +387,28 @@ kbd {
 .done-card p { margin: 0 0 18px; color: var(--muted); }
 .done-card .empty-actions { margin-top: 4px; }
 
+/* Confirm dialog */
+
+.confirm {
+  width: min(400px, calc(100% - 32px));
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+
+.confirm::backdrop {
+  background: rgba(12, 12, 14, 0.6);
+  backdrop-filter: blur(2px);
+}
+
+.confirm-card { padding: 22px 24px 20px; }
+.confirm-card h2 { margin: 0 0 6px; font-size: 16px; }
+.confirm-card p { margin: 0 0 18px; color: var(--muted); }
+.confirm-card .empty-actions { justify-content: flex-end; }
+
 /* Sidebar */
 
 .sidebar {

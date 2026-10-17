@@ -137,6 +137,7 @@
     <div class="sidebar-footer">
       <label class="check"><input type="checkbox" id="close-after"> Close this window after attaching</label>
       <label class="check"><input type="checkbox" id="legend"> Add notes to copied and saved images</label>
+      <label class="check"><input type="checkbox" id="auto-copy"> Copy the image to the clipboard as you edit</label>
       <button class="link" id="reveal">Open the attachments folder</button>
     </div>
   </aside>
@@ -158,6 +159,17 @@
   </div>
   <span class="hint-text" id="status-hint"></span>
 </footer>
+
+<dialog class="confirm" id="confirm" aria-labelledby="confirm-title">
+  <form method="dialog" class="confirm-card">
+    <h2 id="confirm-title">Replace this screenshot?</h2>
+    <p>The new image will take its place, and the marks and notes you added will be lost.</p>
+    <div class="empty-actions">
+      <button class="btn" value="cancel">Keep editing</button>
+      <button class="btn primary" value="ok" autofocus>Replace</button>
+    </div>
+  </form>
+</dialog>
 
 <input type="file" id="file-input" accept="image/*" hidden>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
