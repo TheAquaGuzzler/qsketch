@@ -11,6 +11,7 @@
 
   GET api/waiting lists the attached images the mod has not marked done;
   POST api/done {"ids":[...]} marks them sent or dropped.
+  GET api/clipboard returns the clipboard's image as PNG, or 204 when it has none.
 
   Every URL lives under a random token, so other local pages cannot reach it.
 #>
@@ -41,7 +42,7 @@ $ContentTypes = @{
     '.json' = 'application/json; charset=utf-8'
 }
 $StatusText = @{
-    200 = 'OK'; 301 = 'Moved Permanently'; 400 = 'Bad Request'; 403 = 'Forbidden'
+    200 = 'OK'; 204 = 'No Content'; 301 = 'Moved Permanently'; 400 = 'Bad Request'; 403 = 'Forbidden'
     404 = 'Not Found'; 405 = 'Method Not Allowed'; 413 = 'Payload Too Large'
     500 = 'Internal Server Error'
 }
@@ -120,6 +121,91 @@ function Start-Detached([string]$CommandLine) {
     }
 }
 
+# A window this helper starts has no right to the foreground: Windows keeps it
+# for the app the person last used, so the editor would open behind Claude.
+# Once the page shows its title, the helper takes the window to the front by
+# sharing the foreground window's input for the moment of the switch.
+$EditorTitle = 'qsketch' # the <title> of editor/index.html
+$FocusSource = @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class QsketchWindow {
+    delegate bool EnumProc(IntPtr hwnd, IntPtr data);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc proc, IntPtr data);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr hwnd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr hwnd, StringBuilder text, int max);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hwnd, IntPtr pid);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint from, uint to, bool attach);
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr hwnd);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
+
+    // Visible windows titled `title` (an app window) or `title - ...` (a tab).
+    public static long[] Find(string title) {
+        var found = new List<long>();
+        EnumWindows(delegate (IntPtr hwnd, IntPtr data) {
+            if (IsWindowVisible(hwnd)) {
+                var text = new StringBuilder(512);
+                GetWindowText(hwnd, text, text.Capacity);
+                var t = text.ToString();
+                if (t == title || t.StartsWith(title + " - ", StringComparison.Ordinal)) found.Add(hwnd.ToInt64());
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found.ToArray();
+    }
+
+    public static bool Focus(long handle) {
+        var hwnd = new IntPtr(handle);
+        var me = GetCurrentThreadId();
+        var them = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero);
+        var attached = them != 0 && them != me && AttachThreadInput(me, them, true);
+        try {
+            BringWindowToTop(hwnd);
+            SetForegroundWindow(hwnd);
+        } finally {
+            if (attached) AttachThreadInput(me, them, false);
+        }
+        return GetForegroundWindow() == hwnd;
+    }
+}
+'@
+$FocusSkip = @()
+$FocusUntil = [DateTime]::MinValue
+$FocusNext = [DateTime]::MinValue
+
+function Watch-EditorWindow {
+    try {
+        if (-not ('QsketchWindow' -as [type])) { Add-Type -TypeDefinition $FocusSource -ErrorAction Stop }
+        # This helper serves the page only once this returns, so no window
+        # it just opened has the editor's title yet.
+        $script:FocusSkip = @([QsketchWindow]::Find($EditorTitle))
+        $script:FocusUntil = [DateTime]::UtcNow.AddSeconds(20)
+    } catch {
+        Write-Log ('cannot bring the editor to the front: ' + $_.Exception.Message)
+    }
+}
+
+# Called from the idle loop: focuses the new editor window once it shows up.
+function Step-EditorFocus {
+    $now = [DateTime]::UtcNow
+    if ($now -ge $script:FocusUntil -or $now -lt $script:FocusNext) { return }
+    $script:FocusNext = $now.AddMilliseconds(150)
+    try {
+        $new = @([QsketchWindow]::Find($EditorTitle) | Where-Object { $script:FocusSkip -notcontains $_ })
+        if ($new.Count -eq 0) { return }
+        $script:FocusUntil = [DateTime]::MinValue
+        if (-not [QsketchWindow]::Focus($new[0])) { Write-Log 'the editor window could not take the foreground' }
+    } catch {
+        $script:FocusUntil = [DateTime]::MinValue
+        Write-Log ('cannot bring the editor to the front: ' + $_.Exception.Message)
+    }
+}
+
 function Open-Editor {
     $exe = $null
     $choice = 'default'
@@ -144,7 +230,25 @@ function Open-Editor {
     } else {
         if (-not (Start-Detached "explorer.exe `"$Url`"")) { Start-Process $Url }
     }
+    Watch-EditorWindow
     Write-Event ('{"type":"opened","browser":"' + $choice + '"}')
+}
+
+# The image on the clipboard as PNG bytes, or $null. The page could read it
+# itself only after a permission prompt, on every launch (the port changes).
+function Get-ClipboardPng {
+    Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+    if (-not [System.Windows.Forms.Clipboard]::ContainsImage()) { return $null }
+    $image = [System.Windows.Forms.Clipboard]::GetImage()
+    if (-not $image) { return $null }
+    $stream = New-Object System.IO.MemoryStream
+    try {
+        $image.Save($stream, [System.Drawing.Imaging.ImageFormat]::Png)
+        return , $stream.ToArray()
+    } finally {
+        $image.Dispose()
+        $stream.Dispose()
+    }
 }
 
 function Open-StoreFolder {
@@ -316,6 +420,11 @@ function Invoke-Request($Stream, $Request) {
                 if ($Request.Method -ne 'POST') { Send-Json $Stream 405 '{"ok":false}'; return }
                 Send-Json $Stream 200 (Save-Attachment $Request.Body)
             }
+            'api/clipboard' {
+                $png = Get-ClipboardPng
+                if ($png) { Send-Response $Stream 200 'image/png' $png @() }
+                else { Send-Response $Stream 204 'image/png' ([byte[]]@()) @() }
+            }
             'api/waiting' {
                 Send-Json $Stream 200 (Get-Waiting)
             }
@@ -359,21 +468,37 @@ Write-Event ('{"type":"ready","port":' + $Port + ',"url":' + (ConvertTo-JsonStri
 if ($Open) { Open-Editor }
 
 $lastActivity = [DateTime]::UtcNow
+# Connections accepted but not yet sent a request. Browsers open spare ones
+# that stay silent for a while; reading from those first would hold up the
+# page's stylesheet and script, and the window would stay blank.
+$Idle = New-Object System.Collections.ArrayList
 try {
     while ($true) {
-        if (-not $listener.Pending()) {
+        while ($listener.Pending()) {
+            $client = $listener.AcceptTcpClient()
+            $client.ReceiveTimeout = 15000
+            $client.SendTimeout = 15000
+            [void]$Idle.Add([pscustomobject]@{ Client = $client; Since = [DateTime]::UtcNow })
+            $lastActivity = [DateTime]::UtcNow
+        }
+        # Readable means a request arrived, or the browser closed the connection.
+        $next = $Idle | Where-Object { $_.Client.Client.Poll(0, [System.Net.Sockets.SelectMode]::SelectRead) } | Select-Object -First 1
+        if (-not $next) {
+            foreach ($stale in @($Idle | Where-Object { ([DateTime]::UtcNow - $_.Since).TotalSeconds -ge 15 })) {
+                $stale.Client.Close()
+                $Idle.Remove($stale)
+            }
             if ($IdleMinutes -gt 0 -and ([DateTime]::UtcNow - $lastActivity).TotalMinutes -ge $IdleMinutes) {
                 Write-Event '{"type":"exit","reason":"idle"}'
                 break
             }
-            Start-Sleep -Milliseconds 40
+            Step-EditorFocus
+            Start-Sleep -Milliseconds 15
             continue
         }
-        $client = $listener.AcceptTcpClient()
-        $lastActivity = [DateTime]::UtcNow
+        $Idle.Remove($next)
+        $client = $next.Client
         try {
-            $client.ReceiveTimeout = 15000
-            $client.SendTimeout = 15000
             $stream = $client.GetStream()
             $request = Read-Request $stream
             if ($request) {
@@ -391,5 +516,6 @@ try {
         }
     }
 } finally {
+    foreach ($waiting in $Idle) { $waiting.Client.Close() }
     $listener.Stop()
 }

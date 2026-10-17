@@ -1,7 +1,7 @@
 // qsketch editor: mark up a screenshot and hand it to Claude.
 //
 // The qsketch helper serves this page at http://127.0.0.1:<port>/<token>/.
-// Its API sits beside the page: api/attach, api/open, api/reveal, api/ping.
+// Its API sits beside the page: api/attach, api/open, api/reveal, api/ping, api/clipboard.
 
 const isMac = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 const MOD = isMac ? '⌘' : 'Ctrl+'
@@ -25,7 +25,7 @@ const HISTORY_LIMIT = 100
 
 const TOOLS = {
   select: { key: 'v', name: 'Select', cursor: 'default', hint: 'Click a mark to select it, drag to move it, Delete removes it. Arrow keys nudge.' },
-  pen: { key: 'p', name: 'Pen', cursor: 'crosshair', hint: 'Drag to draw. Hold Shift for a straight line.' },
+  pen: { key: 'b', name: 'Pen', cursor: 'crosshair', hint: 'Drag to draw. Hold Shift for a straight line.' },
   highlighter: { key: 'h', name: 'Highlighter', cursor: 'crosshair', hint: 'Drag to highlight. Hold Shift for a straight line.' },
   arrow: { key: 'a', name: 'Arrow', cursor: 'crosshair', hint: 'Drag from the tail to the tip. Shift snaps the angle.' },
   rect: { key: 'r', name: 'Rectangle', cursor: 'crosshair', hint: 'Drag to draw a box. Shift makes a square.' },
@@ -52,6 +52,7 @@ const notesHint = byIdEl('notes-hint')
 const commentField = byIdEl('comment')
 const closeAfterBox = byIdEl('close-after')
 const legendBox = byIdEl('legend')
+const autoCopyBox = byIdEl('auto-copy')
 const fileInput = byIdEl('file-input')
 const toastEl = byIdEl('toast')
 const undoBtn = byIdEl('undo')
@@ -756,6 +757,7 @@ function afterChange() {
   renderNotes()
   updateUI()
   render()
+  scheduleAutoCopy()
 }
 
 function removeShape(id) {
@@ -1033,6 +1035,7 @@ function createNoteRow(marker) {
     state.notes.set(id, area.value)
     state.used = false
     autoGrow(area)
+    scheduleAutoCopy()
   })
   area.addEventListener('keydown', e => {
     if ((e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.metaKey) || e.key === 'Escape') {
@@ -1297,6 +1300,25 @@ async function copyImage() {
   }
 }
 
+// Keeps the clipboard holding the latest marked-up image, so it can be pasted
+// into Claude without clicking Copy. Quiet: a failed write (say, the window
+// lost focus) is tried again on the next edit.
+let autoCopyTimer = 0
+
+function scheduleAutoCopy() {
+  clearTimeout(autoCopyTimer)
+  if (!autoCopyBox.checked || !state.image) return
+  autoCopyTimer = setTimeout(async () => {
+    if (!state.image || state.draft) return
+    try {
+      const blob = toBlob(exportCanvas({ legend: legendBox.checked && hasNotes() }))
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })])
+    } catch {
+      // Tried again on the next change.
+    }
+  }, 600)
+}
+
 async function saveImage() {
   if (!state.image) return
   commitTextEdit()
@@ -1403,6 +1425,17 @@ async function pasteFromClipboard() {
     toast(`The clipboard holds no image. ${snipHint()}`)
   } catch {
     toast(`Press ${MOD}V to paste the screenshot instead.`)
+  }
+}
+
+// A screenshot already on the clipboard opens as soon as the window does.
+async function loadClipboardOnStart() {
+  try {
+    const response = await fetch('api/clipboard')
+    if (response.status !== 200 || state.image) return
+    await loadImageBlob(await response.blob())
+  } catch {
+    // Nothing to open: the drop zone asks for a paste as usual.
   }
 }
 
@@ -1937,10 +1970,19 @@ function init() {
   closeAfterBox.checked = settings.get('closeAfter', true)
   legendBox.checked = settings.get('legend', true)
   closeAfterBox.addEventListener('change', () => settings.set('closeAfter', closeAfterBox.checked))
-  legendBox.addEventListener('change', () => settings.set('legend', legendBox.checked))
+  autoCopyBox.checked = settings.get('autoCopy', false)
+  legendBox.addEventListener('change', () => {
+    settings.set('legend', legendBox.checked)
+    scheduleAutoCopy()
+  })
+  autoCopyBox.addEventListener('change', () => {
+    settings.set('autoCopy', autoCopyBox.checked)
+    scheduleAutoCopy()
+  })
   commentField.addEventListener('input', () => {
     state.used = false
     autoGrow(commentField)
+    scheduleAutoCopy()
   })
 
   new ResizeObserver(() => {
@@ -1957,6 +1999,7 @@ function init() {
   renderNotes()
   updateUI()
   render()
+  loadClipboardOnStart()
 
   // Keeps the helper alive while this window is open.
   const ping = () => fetch('api/ping').catch(() => {})

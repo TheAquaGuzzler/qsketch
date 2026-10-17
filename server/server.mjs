@@ -254,6 +254,8 @@ async function handle(req, res) {
       return sendJson(res, 403, { ok: false, error: 'wrong origin' })
     }
     if (path === 'api/ping') return sendJson(res, 200, { ok: true })
+    // Only the Windows helper reads the clipboard; here the page pastes as usual.
+    if (path === 'api/clipboard') return send(res, 204, 'image/png', Buffer.alloc(0))
     if (path === 'api/waiting') return sendJson(res, 200, { ok: true, items: attachments.filter(a => !a.done).map(a => a.item) })
     const posts = ['api/attach', 'api/done', 'api/open', 'api/reveal']
     if (req.method !== 'POST') return sendJson(res, posts.includes(path) ? 405 : 404, { ok: false })

@@ -525,7 +525,6 @@ export const register: Register = (on, rawOptions) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const open = () => void (launch ? launch(options) : openEditor($, options))
     const clear = () => void (drop ? drop(list.map(a => a.id)) : dropPending($, list.map(a => a.id)))
-    const dismiss = () => void update($, lastSent, () => null)
 
     let line = 'Mark up a screenshot and attach it to your next message.'
     let color: string | undefined
@@ -544,13 +543,13 @@ export const register: Register = (on, rawOptions) => {
       <Box flexDirection="row" gap={1} alignItems="center">
         <Button key="open" label={list.length ? 'Add another' : 'Annotate screenshot'} onPress={open} />
         {list.length > 0 && <Button key="clear" label="Clear" dimColor onPress={clear} />}
-        {sentItems.length > 0 && <Button key="dismiss" label="Dismiss" dimColor onPress={dismiss} />}
         <Text dimColor={color === undefined} color={color} wrap="truncate-end">
           {line}
         </Text>
       </Box>
     )
-    const shown = list.length ? list : sentItems
+    // Thumbnails only for pictures still waiting; a sent one gets the line alone.
+    const shown = list
     if (!shown.length) return head
 
     const remove = (id: string) => () => void (drop ? drop([id]) : dropPending($, [id]))

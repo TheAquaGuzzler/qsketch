@@ -56,7 +56,7 @@ the message box with <kbd>Ctrl</kbd>+<kbd>V</kbd>.
 | Tool | Key | Notes |
 | --- | --- | --- |
 | Select | <kbd>V</kbd> | Click a mark to select it, drag to move. Delete removes it. Arrow keys nudge. |
-| Pen | <kbd>P</kbd> | Shift draws a straight line. |
+| Pen | <kbd>B</kbd> | Shift draws a straight line. |
 | Highlighter | <kbd>H</kbd> | See-through marker. Shift draws a straight line. |
 | Arrow | <kbd>A</kbd> | Drag from the tail to the tip. Shift snaps the angle. |
 | Rectangle | <kbd>R</kbd> | Shift makes a square. |
