@@ -44,12 +44,15 @@ Microsoft Edge or Google Chrome). On macOS and Linux, [Node.js](https://nodejs.o
    image file, or use **Open image**).
 4. Draw: arrows, boxes, highlights, labels and numbered markers. Describe each
    marker under **Notes for Claude**.
-5. Click **Attach to message** (<kbd>Ctrl</kbd>+<kbd>Enter</kbd>), go back to
+5. Click **Attach to message** (<kbd>Ctrl</kbd>+<kbd>Space</kbd>), go back to
    Claude and send your message. The picture and your notes go with it, and
    the message ends with `📎 Annotated screenshot attached`.
 
 Prefer a normal image attachment? Click **Copy** in the editor, then paste into
 the message box with <kbd>Ctrl</kbd>+<kbd>V</kbd>.
+
+Nothing to screenshot? Click **White board** (or type `/qsk board`) to open the
+editor on a blank white sheet and sketch from scratch.
 
 ## Tools
 
@@ -75,6 +78,7 @@ Shortcuts work in any keyboard layout.
 ## Commands
 
 - `/qsk` opens the editor.
+- `/qsk board` opens the editor on a blank white board.
 - `/qsk clear` removes the screenshots waiting for your next message.
 - `/qsk folder` opens the folder where attached screenshots are kept.
 

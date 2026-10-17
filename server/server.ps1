@@ -4,7 +4,7 @@
   Serves the screenshot editor on 127.0.0.1 and receives the annotated images.
   Talks to the Claude Code mod through stdout, one JSON object per line:
     {"type":"ready","port":N,"url":"..."}    listening
-    {"type":"opened","browser":"edge"}        an editor window was opened
+    {"type":"opened","browser":"edge","board":false}  an editor window was opened
     {"type":"attached","id":...,"meta":{...}} an image was attached
     {"type":"log","message":"..."}            something worth a debug line
     {"type":"exit","reason":"idle"}           stopping on its own
@@ -12,6 +12,7 @@
   GET api/waiting lists the attached images the mod has not marked done;
   POST api/done {"ids":[...]} marks them sent or dropped.
   GET api/clipboard returns the clipboard's image as PNG, or 204 when it has none.
+  POST api/open opens another editor window; api/open?board opens a blank white board.
 
   Every URL lives under a random token, so other local pages cannot reach it.
 #>
@@ -22,7 +23,8 @@ param(
     [int]$KeepDays = 7,
     [int]$IdleMinutes = 30,
     [ValidateSet('auto', 'edge', 'chrome', 'default')][string]$Browser = 'auto',
-    [switch]$Open
+    [switch]$Open,
+    [switch]$Board
 )
 
 $ErrorActionPreference = 'Stop'
@@ -206,7 +208,8 @@ function Step-EditorFocus {
     }
 }
 
-function Open-Editor {
+function Open-Editor([switch]$Board) {
+    $page = if ($Board) { "$Url`?board" } else { $Url }
     $exe = $null
     $choice = 'default'
     if ($Browser -eq 'auto' -or $Browser -eq 'edge') {
@@ -223,15 +226,16 @@ function Open-Editor {
         if ($exe) { $choice = 'chrome' }
     }
     if ($exe) {
-        $arguments = "--app=$Url --window-size=1400,900"
+        $arguments = "--app=$page --window-size=1400,900"
         if (-not (Start-Detached "`"$exe`" $arguments")) {
             Start-Process -FilePath $exe -ArgumentList $arguments
         }
     } else {
-        if (-not (Start-Detached "explorer.exe `"$Url`"")) { Start-Process $Url }
+        if (-not (Start-Detached "explorer.exe `"$page`"")) { Start-Process $page }
     }
     Watch-EditorWindow
-    Write-Event ('{"type":"opened","browser":"' + $choice + '"}')
+    $isBoard = if ($Board) { 'true' } else { 'false' }
+    Write-Event ('{"type":"opened","browser":"' + $choice + '","board":' + $isBoard + '}')
 }
 
 # The image on the clipboard as PNG bytes, or $null. The page could read it
@@ -387,8 +391,12 @@ function Set-Done([byte[]]$Body) {
 
 function Invoke-Request($Stream, $Request) {
     $target = $Request.Target
+    $search = ''
     $query = $target.IndexOf('?')
-    if ($query -ge 0) { $target = $target.Substring(0, $query) }
+    if ($query -ge 0) {
+        $search = $target.Substring($query)
+        $target = $target.Substring(0, $query)
+    }
 
     $hostHeader = $Request.Headers['host']
     if ($hostHeader -ne "127.0.0.1:$Port" -and $hostHeader -ne "localhost:$Port") {
@@ -434,7 +442,7 @@ function Invoke-Request($Stream, $Request) {
             }
             'api/open' {
                 if ($Request.Method -ne 'POST') { Send-Json $Stream 405 '{"ok":false}'; return }
-                Open-Editor
+                Open-Editor -Board:($search -eq '?board')
                 Send-Json $Stream 200 '{"ok":true}'
             }
             'api/reveal' {
@@ -465,7 +473,7 @@ $Port = $listener.LocalEndpoint.Port
 $Url = "http://127.0.0.1:$Port/$Token/"
 Write-Event ('{"type":"ready","port":' + $Port + ',"url":' + (ConvertTo-JsonString $Url) +
     ',"store":' + (ConvertTo-JsonString $StoreDir) + '}')
-if ($Open) { Open-Editor }
+if ($Open) { Open-Editor -Board:$Board }
 
 $lastActivity = [DateTime]::UtcNow
 # Connections accepted but not yet sent a request. Browsers open spare ones

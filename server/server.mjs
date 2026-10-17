@@ -5,13 +5,14 @@
 // Serves the screenshot editor on 127.0.0.1 and receives the annotated images.
 // Talks to the Claude Code mod through stdout, one JSON object per line:
 //   {"type":"ready","port":N,"url":"..."}    listening
-//   {"type":"opened","browser":"chrome"}      an editor window was opened
+//   {"type":"opened","browser":"chrome","board":false}  an editor window was opened
 //   {"type":"attached","id":...,"meta":{...}} an image was attached
 //   {"type":"log","message":"..."}            something worth a debug line
 //   {"type":"exit","reason":"idle"}           stopping on its own
 //
 // GET api/waiting lists the attached images the mod has not marked done;
 // POST api/done {"ids":[...]} marks them sent or dropped.
+// POST api/open opens another editor window; api/open?board opens a blank white board.
 //
 // Every URL lives under a random token, so other local pages cannot reach it.
 
@@ -242,7 +243,7 @@ async function handle(req, res) {
   lastActivity = Date.now()
   const host = req.headers.host
   if (host !== `127.0.0.1:${port}` && host !== `localhost:${port}`) return sendJson(res, 403, { ok: false, error: 'wrong host' })
-  const target = (req.url || '/').split('?')[0]
+  const [target, search = ''] = (req.url || '/').split('?')
   if (target === `/${token}`) return send(res, 301, 'text/plain; charset=utf-8', Buffer.from('Moved'), { Location: `/${token}/` })
   const prefix = `/${token}/`
   if (!target.startsWith(prefix)) return sendJson(res, 404, { ok: false, error: 'not found' })
@@ -262,7 +263,8 @@ async function handle(req, res) {
     if (path === 'api/attach') return sendJson(res, 200, saveAttachment(await readBody(req)))
     if (path === 'api/done') return sendJson(res, 200, markDone(await readBody(req)))
     if (path === 'api/open') {
-      emit({ type: 'opened', browser: await openEditor(url) })
+      const board = search === 'board'
+      emit({ type: 'opened', browser: await openEditor(board ? `${url}?board` : url), board })
       return sendJson(res, 200, { ok: true })
     }
     if (path === 'api/reveal') {
@@ -290,7 +292,8 @@ server.listen(0, '127.0.0.1', async () => {
   port = server.address().port
   url = `http://127.0.0.1:${port}/${token}/`
   emit({ type: 'ready', port, url, store: storeDir })
-  if (args.open) emit({ type: 'opened', browser: await openEditor(url) })
+  const board = args.board === true
+  if (args.open) emit({ type: 'opened', browser: await openEditor(board ? `${url}?board` : url), board })
 })
 
 if (idleMinutes > 0) {
