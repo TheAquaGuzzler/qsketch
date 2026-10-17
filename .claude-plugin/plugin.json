@@ -1,0 +1,32 @@
+{
+  "name": "qsketch",
+  "version": "0.1.0",
+  "description": "Mark up a screenshot in a Paint-style editor and attach it to your next message, so Claude sees exactly what you mean.",
+  "author": { "name": "TheAquaGuzzler", "url": "https://github.com/TheAquaGuzzler" },
+  "homepage": "https://github.com/TheAquaGuzzler/qsketch",
+  "repository": "https://github.com/TheAquaGuzzler/qsketch",
+  "license": "MIT",
+  "keywords": ["screenshot", "annotate", "markup", "sketch", "image", "feedback", "ui"],
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "keepDays": {
+      "type": "number",
+      "title": "Keep attachments for (days)",
+      "description": "Attached images are deleted after this many days. 0 keeps them forever. Use Save in the editor to keep a copy anywhere you like.",
+      "default": 7
+    },
+    "browser": {
+      "type": "string",
+      "title": "Editor window",
+      "description": "Which browser opens the editor window: auto tries Edge, then Chrome, then your default browser.",
+      "default": "auto",
+      "options": ["auto", "edge", "chrome", "default"]
+    },
+    "showButton": {
+      "type": "boolean",
+      "title": "Show the qsketch button above the prompt",
+      "description": "When off, open the editor with /qsk. Pending attachments are always shown.",
+      "default": true
+    }
+  }
+}

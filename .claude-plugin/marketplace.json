@@ -1,0 +1,12 @@
+{
+  "name": "qsketch",
+  "owner": { "name": "TheAquaGuzzler" },
+  "description": "qsketch: mark up screenshots and attach them to your next message in Claude Code.",
+  "plugins": [
+    {
+      "name": "qsketch",
+      "source": "./",
+      "description": "Mark up a screenshot in a Paint-style editor and attach it to your next message."
+    }
+  ]
+}
